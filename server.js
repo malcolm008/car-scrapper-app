@@ -156,6 +156,285 @@ app.post('/api/models', async (req, res) => {
   }
 });
 
+
+// Get years for a specific model
+app.post('/api/years', async (req, res) => {
+  try {
+    const { modelId, tokens } = req.body;
+    
+    if (!modelId || !tokens) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameters'
+      });
+    }
+
+    const payload = new URLSearchParams();
+    payload.append('ctl00$MainContent$ddlModel', modelId);
+    payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlModel');
+    payload.append('__EVENTARGUMENT', '');
+    payload.append('__LASTFOCUS', '');
+    payload.append('__VIEWSTATE', tokens.viewState);
+    payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
+    payload.append('__EVENTVALIDATION', tokens.eventValidation);
+    payload.append('__ASYNCPOST', 'true');
+
+    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Origin': 'https://umvvs.tra.go.tz',
+        'Referer': 'https://umvvs.tra.go.tz/'
+      }
+    });
+
+    // Parse years
+    const years = [];
+    const yearRegex = /<option value="(\d+)">([^<]+)<\/option>/g;
+    let match;
+    
+    while ((match = yearRegex.exec(data)) !== null) {
+      if (match[1] !== '0') {
+        years.push({
+          value: match[1],
+          text: match[2].trim()
+        });
+      }
+    }
+
+    // Extract new tokens
+    const $ = cheerio.load(data);
+    const newTokens = {
+      viewState: $('input#__VIEWSTATE').val(),
+      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
+      eventValidation: $('input#__EVENTVALIDATION').val()
+    };
+
+    res.json({
+      success: true,
+      data: {
+        years,
+        tokens: newTokens
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch years',
+      details: error.message
+    });
+  }
+});
+
+// Get countries for a specific year
+app.post('/api/countries', async (req, res) => {
+  try {
+    const { yearId, tokens } = req.body;
+    
+    if (!yearId || !tokens) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameters'
+      });
+    }
+
+    const payload = new URLSearchParams();
+    payload.append('ctl00$MainContent$ddlYear', yearId);
+    payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlYear');
+    payload.append('__EVENTARGUMENT', '');
+    payload.append('__LASTFOCUS', '');
+    payload.append('__VIEWSTATE', tokens.viewState);
+    payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
+    payload.append('__EVENTVALIDATION', tokens.eventValidation);
+    payload.append('__ASYNCPOST', 'true');
+
+    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Origin': 'https://umvvs.tra.go.tz',
+        'Referer': 'https://umvvs.tra.go.tz/'
+      }
+    });
+
+    // Parse countries
+    const countries = [];
+    const countryRegex = /<option value="(\d+)">([^<]+)<\/option>/g;
+    let match;
+    
+    while ((match = countryRegex.exec(data)) !== null) {
+      if (match[1] !== '0') {
+        countries.push({
+          value: match[1],
+          text: match[2].trim()
+        });
+      }
+    }
+
+    // Extract new tokens
+    const $ = cheerio.load(data);
+    const newTokens = {
+      viewState: $('input#__VIEWSTATE').val(),
+      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
+      eventValidation: $('input#__EVENTVALIDATION').val()
+    };
+
+    res.json({
+      success: true,
+      data: {
+        countries,
+        tokens: newTokens
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch countries',
+      details: error.message
+    });
+  }
+});
+
+// Get fuel types for a specific country
+app.post('/api/fuel-types', async (req, res) => {
+  try {
+    const { countryId, tokens } = req.body;
+    
+    if (!countryId || !tokens) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameters'
+      });
+    }
+
+    const payload = new URLSearchParams();
+    payload.append('ctl00$MainContent$ddlCountry', countryId);
+    payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlCountry');
+    payload.append('__EVENTARGUMENT', '');
+    payload.append('__LASTFOCUS', '');
+    payload.append('__VIEWSTATE', tokens.viewState);
+    payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
+    payload.append('__EVENTVALIDATION', tokens.eventValidation);
+    payload.append('__ASYNCPOST', 'true');
+
+    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Origin': 'https://umvvs.tra.go.tz',
+        'Referer': 'https://umvvs.tra.go.tz/'
+      }
+    });
+
+    // Parse fuel types
+    const fuelTypes = [];
+    const fuelRegex = /<option value="(\d+)">([^<]+)<\/option>/g;
+    let match;
+    
+    while ((match = fuelRegex.exec(data)) !== null) {
+      if (match[1] !== '0') {
+        fuelTypes.push({
+          value: match[1],
+          text: match[2].trim()
+        });
+      }
+    }
+
+    // Extract new tokens
+    const $ = cheerio.load(data);
+    const newTokens = {
+      viewState: $('input#__VIEWSTATE').val(),
+      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
+      eventValidation: $('input#__EVENTVALIDATION').val()
+    };
+
+    res.json({
+      success: true,
+      data: {
+        fuelTypes,
+        tokens: newTokens
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch fuel types',
+      details: error.message
+    });
+  }
+});
+
+// Get engines for a specific fuel type
+app.post('/api/engines', async (req, res) => {
+  try {
+    const { fuelTypeId, tokens } = req.body;
+    
+    if (!fuelTypeId || !tokens) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameters'
+      });
+    }
+
+    const payload = new URLSearchParams();
+    payload.append('ctl00$MainContent$ddlFuel', fuelTypeId);
+    payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlFuel');
+    payload.append('__EVENTARGUMENT', '');
+    payload.append('__LASTFOCUS', '');
+    payload.append('__VIEWSTATE', tokens.viewState);
+    payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
+    payload.append('__EVENTVALIDATION', tokens.eventValidation);
+    payload.append('__ASYNCPOST', 'true');
+
+    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Origin': 'https://umvvs.tra.go.tz',
+        'Referer': 'https://umvvs.tra.go.tz/'
+      }
+    });
+
+    // Parse engines
+    const engines = [];
+    const engineRegex = /<option value="(\d+)">([^<]+)<\/option>/g;
+    let match;
+    
+    while ((match = engineRegex.exec(data)) !== null) {
+      if (match[1] !== '0') {
+        engines.push({
+          value: match[1],
+          text: match[2].trim()
+        });
+      }
+    }
+
+    // Extract new tokens
+    const $ = cheerio.load(data);
+    const newTokens = {
+      viewState: $('input#__VIEWSTATE').val(),
+      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
+      eventValidation: $('input#__EVENTVALIDATION').val()
+    };
+
+    res.json({
+      success: true,
+      data: {
+        engines,
+        tokens: newTokens
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch engines',
+      details: error.message
+    });
+  }
+});
+
+// [Rest of your existing code remains the same]
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
@@ -178,7 +457,11 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`API endpoints:`);
-  console.log(`- GET   /api/init`);
-  console.log(`- POST  /api/models`);
-  console.log(`- GET   /api/health`);
+  console.log(`- GET    /api/init`);
+  console.log(`- POST   /api/models`);
+  console.log(`- POST   /api/years`);
+  console.log(`- POST   /api/countries`);
+  console.log(`- POST   /api/fuel-types`);
+  console.log(`- POST   /api/engines`);
+  console.log(`- GET    /api/health`);
 });
