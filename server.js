@@ -67,18 +67,17 @@ setInterval(refreshCache, 300000);
 // Get initialization data (makes + tokens)
 app.get('/api/init', async (req, res) => {
   try {
-    if (!cache.isValid) {
-      await refreshCache();
-    }
+    // Always get fresh page state - don't use cache
+    const pageState = await getPageState();
     
     res.json({
       success: true,
       data: {
-        makes: cache.data.makes,
+        makes: pageState.makes,
         tokens: {
-          viewState: cache.data.viewState,
-          viewStateGenerator: cache.data.viewStateGenerator,
-          eventValidation: cache.data.eventValidation
+          viewState: pageState.viewState,
+          viewStateGenerator: pageState.viewStateGenerator,
+          eventValidation: pageState.eventValidation
         }
       }
     });
@@ -103,134 +102,60 @@ app.post('/api/models', async (req, res) => {
       });
     }
 
-    // Enhanced payload with all required fields
+    // First get a fresh page state to ensure valid tokens
+    const freshState = await getPageState();
+    
     const payload = new URLSearchParams();
     payload.append('ctl00$ScriptManager1', 'ctl00$MainContent$UpdatePanel1|ctl00$MainContent$ddlMake');
     payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlMake');
     payload.append('__EVENTARGUMENT', '');
     payload.append('__LASTFOCUS', '');
-    payload.append('__VIEWSTATE', tokens.viewState);
-    payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
-    payload.append('__EVENTVALIDATION', tokens.eventValidation);
+    payload.append('__VIEWSTATE', freshState.viewState); // Use fresh ViewState
+    payload.append('__VIEWSTATEGENERATOR', freshState.viewStateGenerator || 'CA0B0334');
+    payload.append('__EVENTVALIDATION', freshState.eventValidation);
     payload.append('__ASYNCPOST', 'true');
     payload.append('ctl00$MainContent$ddlMake', makeId);
+    // Include all other required fields with default values
     payload.append('ctl00$MainContent$ddlModel', '0');
     payload.append('ctl00$MainContent$ddlYear', '0');
     payload.append('ctl00$MainContent$ddlCountry', '0');
     payload.append('ctl00$MainContent$ddlFuel', '0');
     payload.append('ctl00$MainContent$ddlEngine', '0');
-    payload.append('__ASYNCPOST', 'true');
 
     const headers = {
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Origin': 'https://umvvs.tra.go.tz',
       'Referer': 'https://umvvs.tra.go.tz/',
       'X-MicrosoftAjax': 'Delta=true',
-      'X-Requested-With': 'XMLHttpRequest',
-      'Accept': '*/*',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Cache-Control': 'no-cache'
+      'X-Requested-With': 'XMLHttpRequest'
     };
 
-    console.log('Sending request with payload:', payload.toString());
-
-    const response = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
+    // Add delay to mimic human behavior
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), { 
       headers,
-      timeout: 10000,
-      maxRedirects: 0,
-      validateStatus: (status) => status >= 200 && status < 400
+      maxRedirects: 0
     });
 
-    console.log('Received response with status:', response.status);
-    console.log('Response headers:', response.headers);
-    console.log('First 500 chars of response:', response.data.substring(0, 500));
-
-    // Enhanced response parsing
-    let models = [];
-    let newTokens = {
-      viewState: tokens.viewState,
-      viewStateGenerator: tokens.viewStateGenerator,
-      eventValidation: tokens.eventValidation
-    };
-
-    // Try multiple parsing strategies
-    const parsingStrategies = [
-      // Strategy 1: Parse ASP.NET AJAX response
-      () => {
-        const parts = response.data.split('|');
-        for (let i = 0; i < parts.length; i++) {
-          if (parts[i] === 'updatePanel' && parts[i+1] === 'MainContent_ddlPanel') {
-            const html = parts[i+2];
-            const $ = cheerio.load(html);
-            
-            $('select[id="MainContent_ddlModel"] option').each((i, el) => {
-              const value = $(el).attr('value');
-              if (value && value !== '0') {
-                models.push({
-                  value: value,
-                  text: $(el).text().trim()
-                });
-              }
-            });
-
-            newTokens.viewState = $('input#__VIEWSTATE').val() || newTokens.viewState;
-            newTokens.eventValidation = $('input#__EVENTVALIDATION').val() || newTokens.eventValidation;
-            return models.length > 0;
-          }
-        }
-        return false;
-      },
-      
-      // Strategy 2: Parse full HTML response
-      () => {
-        const $ = cheerio.load(response.data);
-        $('#MainContent_ddlModel option').each((i, el) => {
-          const value = $(el).attr('value');
-          if (value && value !== '0') {
-            models.push({
-              value: value,
-              text: $(el).text().trim()
-            });
-          }
-        });
-        
-        newTokens.viewState = $('input#__VIEWSTATE').val() || newTokens.viewState;
-        newTokens.eventValidation = $('input#__EVENTVALIDATION').val() || newTokens.eventValidation;
-        return models.length > 0;
-      },
-      
-      // Strategy 3: Try to find JSON in the response
-      () => {
-        try {
-          const jsonMatch = response.data.match(/\{.*\}/);
-          if (jsonMatch) {
-            const jsonData = JSON.parse(jsonMatch[0]);
-            if (jsonData.models) {
-              models = jsonData.models;
-              return true;
-            }
-          }
-        } catch (e) {
-          return false;
-        }
-        return false;
-      }
-    ];
-
-    // Try each strategy until one works
-    for (const strategy of parsingStrategies) {
-      if (strategy()) break;
-    }
+    // Parse the response
+    const $ = cheerio.load(data);
+    const models = $('#MainContent_ddlModel option').map((i, el) => ({
+      value: $(el).attr('value'),
+      text: $(el).text().trim()
+    })).get().filter(opt => opt.value !== '0');
 
     if (models.length === 0) {
-      // Save the problematic response for debugging
-      const fs = require('fs');
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      fs.writeFileSync(`debug-response-${timestamp}.html`, response.data);
-      
-      throw new Error(`No models found in response. Tried ${parsingStrategies.length} parsing strategies. Saved response to debug-response-${timestamp}.html`);
+      throw new Error('No models found in the dropdown after selection');
     }
+
+    // Get fresh tokens from the response
+    const newTokens = {
+      viewState: $('input#__VIEWSTATE').val(),
+      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val() || 'CA0B0334',
+      eventValidation: $('input#__EVENTVALIDATION').val()
+    };
 
     res.json({
       success: true,
@@ -241,19 +166,23 @@ app.post('/api/models', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Model fetch error:', error.message);
-    console.error('Error stack:', error.stack);
+    console.error('Full error:', {
+      message: error.message,
+      stack: error.stack,
+      response: error.response?.data,
+      config: error.config
+    });
     
     res.status(500).json({
       success: false,
       error: 'Failed to fetch models',
       details: error.message,
-      responseData: error.response?.data ? error.response.data.substring(0, 500) + '...' : undefined,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      debug: process.env.NODE_ENV === 'development' ? {
+        stack: error.stack
+      } : undefined
     });
   }
 });
-
 
 // Get years for a specific model
 app.post('/api/dropdown', async (req, res) => {
