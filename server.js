@@ -103,6 +103,7 @@ app.post('/api/models', async (req, res) => {
       });
     }
 
+    // Enhanced payload with all required fields
     const payload = new URLSearchParams();
     payload.append('ctl00$ScriptManager1', 'ctl00$MainContent$UpdatePanel1|ctl00$MainContent$ddlMake');
     payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlMake');
@@ -118,25 +119,32 @@ app.post('/api/models', async (req, res) => {
     payload.append('ctl00$MainContent$ddlCountry', '0');
     payload.append('ctl00$MainContent$ddlFuel', '0');
     payload.append('ctl00$MainContent$ddlEngine', '0');
+    payload.append('__ASYNCPOST', 'true');
 
     const headers = {
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
       'Origin': 'https://umvvs.tra.go.tz',
       'Referer': 'https://umvvs.tra.go.tz/',
       'X-MicrosoftAjax': 'Delta=true',
       'X-Requested-With': 'XMLHttpRequest',
+      'Accept': '*/*',
+      'Accept-Encoding': 'gzip, deflate, br',
       'Cache-Control': 'no-cache'
     };
 
-    // Add delay to mimic human interaction
-    await new Promise(resolve => setTimeout(resolve, 800));
-    
-    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), { 
+    console.log('Sending request with payload:', payload.toString());
+
+    const response = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
       headers,
+      timeout: 10000,
       maxRedirects: 0,
       validateStatus: (status) => status >= 200 && status < 400
     });
+
+    console.log('Received response with status:', response.status);
+    console.log('Response headers:', response.headers);
+    console.log('First 500 chars of response:', response.data.substring(0, 500));
 
     // Enhanced response parsing
     let models = [];
@@ -146,15 +154,38 @@ app.post('/api/models', async (req, res) => {
       eventValidation: tokens.eventValidation
     };
 
-    // Try to parse as ASP.NET AJAX response first
-    const parts = data.split('|');
-    for (let i = 0; i < parts.length; i++) {
-      if (parts[i] === 'updatePanel' && parts[i+1] === 'MainContent_ddlPanel') {
-        const html = parts[i+2];
-        const $ = cheerio.load(html);
-        
-        // Extract models
-        $('select[id="MainContent_ddlModel"] option').each((i, el) => {
+    // Try multiple parsing strategies
+    const parsingStrategies = [
+      // Strategy 1: Parse ASP.NET AJAX response
+      () => {
+        const parts = response.data.split('|');
+        for (let i = 0; i < parts.length; i++) {
+          if (parts[i] === 'updatePanel' && parts[i+1] === 'MainContent_ddlPanel') {
+            const html = parts[i+2];
+            const $ = cheerio.load(html);
+            
+            $('select[id="MainContent_ddlModel"] option').each((i, el) => {
+              const value = $(el).attr('value');
+              if (value && value !== '0') {
+                models.push({
+                  value: value,
+                  text: $(el).text().trim()
+                });
+              }
+            });
+
+            newTokens.viewState = $('input#__VIEWSTATE').val() || newTokens.viewState;
+            newTokens.eventValidation = $('input#__EVENTVALIDATION').val() || newTokens.eventValidation;
+            return models.length > 0;
+          }
+        }
+        return false;
+      },
+      
+      // Strategy 2: Parse full HTML response
+      () => {
+        const $ = cheerio.load(response.data);
+        $('#MainContent_ddlModel option').each((i, el) => {
           const value = $(el).attr('value');
           if (value && value !== '0') {
             models.push({
@@ -163,34 +194,42 @@ app.post('/api/models', async (req, res) => {
             });
           }
         });
-
-        // Extract new tokens from hidden fields
+        
         newTokens.viewState = $('input#__VIEWSTATE').val() || newTokens.viewState;
         newTokens.eventValidation = $('input#__EVENTVALIDATION').val() || newTokens.eventValidation;
-        break;
-      }
-    }
-
-    // Fallback to full HTML parsing if AJAX parsing failed
-    if (models.length === 0) {
-      const $ = cheerio.load(data);
-      $('#MainContent_ddlModel option').each((i, el) => {
-        const value = $(el).attr('value');
-        if (value && value !== '0') {
-          models.push({
-            value: value,
-            text: $(el).text().trim()
-          });
-        }
-      });
+        return models.length > 0;
+      },
       
-      // Update tokens from full page
-      newTokens.viewState = $('input#__VIEWSTATE').val() || newTokens.viewState;
-      newTokens.eventValidation = $('input#__EVENTVALIDATION').val() || newTokens.eventValidation;
+      // Strategy 3: Try to find JSON in the response
+      () => {
+        try {
+          const jsonMatch = response.data.match(/\{.*\}/);
+          if (jsonMatch) {
+            const jsonData = JSON.parse(jsonMatch[0]);
+            if (jsonData.models) {
+              models = jsonData.models;
+              return true;
+            }
+          }
+        } catch (e) {
+          return false;
+        }
+        return false;
+      }
+    ];
+
+    // Try each strategy until one works
+    for (const strategy of parsingStrategies) {
+      if (strategy()) break;
     }
 
     if (models.length === 0) {
-      throw new Error('No models found in response. The site structure may have changed.');
+      // Save the problematic response for debugging
+      const fs = require('fs');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      fs.writeFileSync(`debug-response-${timestamp}.html`, response.data);
+      
+      throw new Error(`No models found in response. Tried ${parsingStrategies.length} parsing strategies. Saved response to debug-response-${timestamp}.html`);
     }
 
     res.json({
@@ -203,11 +242,14 @@ app.post('/api/models', async (req, res) => {
 
   } catch (error) {
     console.error('Model fetch error:', error.message);
+    console.error('Error stack:', error.stack);
+    
     res.status(500).json({
       success: false,
       error: 'Failed to fetch models',
       details: error.message,
-      response: error.response?.data
+      responseData: error.response?.data ? error.response.data.substring(0, 500) + '...' : undefined,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
