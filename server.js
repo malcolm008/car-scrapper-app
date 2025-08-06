@@ -118,22 +118,22 @@ app.post('/api/models', async (req, res) => {
       }
     });
 
-    // Parse the response
+    // NEW PARSING LOGIC - Matches the exact HTML structure you shared
+    const $ = cheerio.load(data);
     const models = [];
-    const modelRegex = /<option value="(\d+)">([^<]+)<\/option>/g;
-    let match;
     
-    while ((match = modelRegex.exec(data)) !== null) {
-      if (match[1] !== '0') {
+    $('#MainContent_ddlModel option').each((i, el) => {
+      const value = $(el).attr('value');
+      const text = $(el).text().trim();
+      if (value !== '0') { // Skip the "Select Model" option
         models.push({
-          value: match[1],
-          text: match[2].trim()
+          value: value,
+          text: text.replace(/&amp;/g, '&') // Fix HTML entities
         });
       }
-    }
+    });
 
-    // Extract new tokens for subsequent requests
-    const $ = cheerio.load(data);
+    // Extract new tokens
     const newTokens = {
       viewState: $('input#__VIEWSTATE').val(),
       viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
