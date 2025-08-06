@@ -99,8 +99,16 @@ app.post('/api/models', async (req, res) => {
       });
     }
 
+    // Prepare the exact payload structure from the UMVVS site
     const payload = new URLSearchParams();
+    payload.append('ctl00$ctl08', '');
+    payload.append('ctl00$MainContent$ddlPanel', 'ctl00$MainContent$ddlModel');
     payload.append('ctl00$MainContent$ddlMake', makeId);
+    payload.append('ctl00$MainContent$ddlModel', '0'); // Initial empty selection
+    payload.append('ctl00$MainContent$ddlYear', '0');
+    payload.append('ctl00$MainContent$ddlCountry', '0');
+    payload.append('ctl00$MainContent$ddlFuel', '0');
+    payload.append('ctl00$MainContent$ddlEngine', '0');
     payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlMake');
     payload.append('__EVENTARGUMENT', '');
     payload.append('__LASTFOCUS', '');
@@ -109,35 +117,53 @@ app.post('/api/models', async (req, res) => {
     payload.append('__EVENTVALIDATION', tokens.eventValidation);
     payload.append('__ASYNCPOST', 'true');
 
+    // Add a small delay to mimic human interaction
+    await new Promise(resolve => setTimeout(resolve, 300));
+
     const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Origin': 'https://umvvs.tra.go.tz',
-        'Referer': 'https://umvvs.tra.go.tz/'
+        'Referer': 'https://umvvs.tra.go.tz/',
+        'Accept': '*/*',
+        'X-MicrosoftAjax': 'Delta=true'
       }
     });
 
-    // NEW PARSING LOGIC - Matches the exact HTML structure you shared
+    // Parse the response - Method 1: Cheerio (more reliable)
     const $ = cheerio.load(data);
     const models = [];
     
     $('#MainContent_ddlModel option').each((i, el) => {
       const value = $(el).attr('value');
-      const text = $(el).text().trim();
-      if (value !== '0') { // Skip the "Select Model" option
+      if (value && value !== '0') {
         models.push({
           value: value,
-          text: text.replace(/&amp;/g, '&') // Fix HTML entities
+          text: $(el).text().replace(/&amp;/g, '&').trim()
         });
       }
     });
 
+    // Method 2: Regex fallback
+    if (models.length === 0) {
+      const modelRegex = /<option\s+value="([^"]+)"[^>]*>([^<]+)<\/option>/gi;
+      let match;
+      while ((match = modelRegex.exec(data)) !== null) {
+        if (match[1] !== '0') {
+          models.push({
+            value: match[1],
+            text: match[2].replace(/&amp;/g, '&').trim()
+          });
+        }
+      }
+    }
+
     // Extract new tokens
     const newTokens = {
-      viewState: $('input#__VIEWSTATE').val(),
-      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
-      eventValidation: $('input#__EVENTVALIDATION').val()
+      viewState: $('input#__VIEWSTATE').val() || tokens.viewState,
+      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val() || tokens.viewStateGenerator,
+      eventValidation: $('input#__EVENTVALIDATION').val() || tokens.eventValidation
     };
 
     res.json({
@@ -148,6 +174,7 @@ app.post('/api/models', async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('Model fetch error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch models',
