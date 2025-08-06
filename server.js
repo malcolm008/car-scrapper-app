@@ -99,16 +99,10 @@ app.post('/api/models', async (req, res) => {
       });
     }
 
-    // 1. Prepare the exact payload structure
+    // 1. Prepare the EXACT payload that UMVVS expects
     const payload = new URLSearchParams();
-    payload.append('ctl00$ctl08', '');
-    payload.append('ctl00$MainContent$ddlPanel', 'ctl00$MainContent$ddlModel');
+    payload.append('ctl00$ScriptManager1', 'ctl00$MainContent$UpdatePanel1|ctl00$MainContent$ddlMake');
     payload.append('ctl00$MainContent$ddlMake', makeId);
-    payload.append('ctl00$MainContent$ddlModel', '0');
-    payload.append('ctl00$MainContent$ddlYear', '0');
-    payload.append('ctl00$MainContent$ddlCountry', '0');
-    payload.append('ctl00$MainContent$ddlFuel', '0');
-    payload.append('ctl00$MainContent$ddlEngine', '0');
     payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlMake');
     payload.append('__EVENTARGUMENT', '');
     payload.append('__LASTFOCUS', '');
@@ -116,85 +110,69 @@ app.post('/api/models', async (req, res) => {
     payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
     payload.append('__EVENTVALIDATION', tokens.eventValidation);
     payload.append('__ASYNCPOST', 'true');
+    payload.append('ctl00$MainContent$ddlModel', '0');
+    payload.append('ctl00$MainContent$ddlYear', '0');
+    payload.append('ctl00$MainContent$ddlCountry', '0');
+    payload.append('ctl00$MainContent$ddlFuel', '0');
+    payload.append('ctl00$MainContent$ddlEngine', '0');
 
-    // 2. Add delay and custom headers
+    // 2. Add critical ASP.NET AJAX headers
+    const headers = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Origin': 'https://umvvs.tra.go.tz',
+      'Referer': 'https://umvvs.tra.go.tz/',
+      'X-MicrosoftAjax': 'Delta=true',
+      'X-Requested-With': 'XMLHttpRequest'
+    };
+
+    // 3. Make the request with delay to mimic human interaction
     await new Promise(resolve => setTimeout(resolve, 500));
-    
-    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Origin': 'https://umvvs.tra.go.tz',
-        'Referer': 'https://umvvs.tra.go.tz/',
-        'X-MicrosoftAjax': 'Delta=true',
-        'X-Requested-With': 'XMLHttpRequest'
-      },
-      timeout: 10000 // 10 second timeout
-    });
+    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), { headers });
 
-    // 3. DEBUG: Log the raw response snippet
-    console.log("Response snippet:", data.substring(0, 500));
-
-    // 4. Enhanced parsing with multiple fallbacks
+    // 4. Parse the ASP.NET AJAX response format
     const models = [];
-    const $ = cheerio.load(data);
     
-    // Try direct select first
-    $('#MainContent_ddlModel option').each((i, el) => {
-      const value = $(el).attr('value');
-      if (value && value !== '0') {
-        models.push({
-          value: value,
-          text: $(el).text().replace(/&amp;/g, '&').trim()
-        });
-      }
-    });
-
-    // If empty, try parsing the updatePanel content
-    if (models.length === 0) {
-      const updatePanelContent = data.match(/updatePanel\|[^|]+\|([^|]+)\|/)?.[1];
-      if (updatePanelContent) {
-        const $update = cheerio.load(updatePanelContent);
-        $update('option').each((i, el) => {
-          const value = $update(el).attr('value');
-          if (value && value !== '0') {
-            models.push({
-              value: value,
-              text: $update(el).text().replace(/&amp;/g, '&').trim()
-            });
-          }
-        });
-      }
-    }
-
-    // If still empty, try regex as last resort
-    if (models.length === 0) {
-      const modelRegex = /<option\s+value="([^"]+)"[^>]*>(.*?)<\/option>/gis;
-      let match;
-      while ((match = modelRegex.exec(data)) !== null) {
-        if (match[1] !== '0') {
+    // First try to parse the updatePanel response
+    const updatePanelMatch = data.match(/\|updatePanel\|[^|]+\|([^|]+)\|/);
+    if (updatePanelMatch && updatePanelMatch[1]) {
+      const $ = cheerio.load(updatePanelMatch[1]);
+      $('select[id*="ddlModel"] option').each((i, el) => {
+        const value = $(el).attr('value');
+        if (value && value !== '0') {
           models.push({
-            value: match[1],
-            text: match[2].replace(/&amp;/g, '&').trim()
+            value: value,
+            text: $(el).text().replace(/&amp;/g, '&').trim()
           });
         }
-      }
+      });
+    }
+    
+    // Fallback to full HTML parsing if updatePanel parsing fails
+    if (models.length === 0) {
+      const $ = cheerio.load(data);
+      $('#MainContent_ddlModel option').each((i, el) => {
+        const value = $(el).attr('value');
+        if (value && value !== '0') {
+          models.push({
+            value: value,
+            text: $(el).text().replace(/&amp;/g, '&').trim()
+          });
+        }
+      });
     }
 
-    // 5. Extract new tokens with fallbacks
+    // 5. Extract new tokens from the response
+    const tokenRegex = /<input[^>]+__VIEWSTATE[^>]+value="([^"]*)"[^>]*>.*?<input[^>]+__EVENTVALIDATION[^>]+value="([^"]*)"[^>]*>/gs;
+    const tokenMatch = tokenRegex.exec(data);
     const newTokens = {
-      viewState: $('input#__VIEWSTATE').val() || tokens.viewState,
-      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val() || tokens.viewStateGenerator,
-      eventValidation: $('input#__EVENTVALIDATION').val() || tokens.eventValidation
+      viewState: tokenMatch?.[1] || tokens.viewState,
+      viewStateGenerator: tokens.viewStateGenerator,
+      eventValidation: tokenMatch?.[2] || tokens.eventValidation
     };
 
     if (models.length === 0) {
-      console.error("No models found in response. Full response:", data);
-      return res.status(500).json({
-        success: false,
-        error: 'No models found in response',
-        debug: 'Check server logs for response details'
-      });
+      throw new Error('No models found in response. The server might have returned an error page.');
     }
 
     res.json({
@@ -207,9 +185,6 @@ app.post('/api/models', async (req, res) => {
 
   } catch (error) {
     console.error('Model fetch error:', error.message);
-    if (error.response) {
-      console.error('Response data:', error.response.data);
-    }
     res.status(500).json({
       success: false,
       error: 'Failed to fetch models',
