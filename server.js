@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const cors = require('cors');
+const { parseStringPromise } = require('xml2js');
 const URL = require('url').URL;
 
 const app = express();
@@ -22,25 +23,28 @@ async function getPageState() {
   try {
     const { data } = await axios.get('https://umvvs.tra.go.tz', {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
       }
     });
     
     const $ = cheerio.load(data);
     return {
       viewState: $('input#__VIEWSTATE').val(),
-      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
+      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val() || 'CA0B0334', // Default if not found
       eventValidation: $('input#__EVENTVALIDATION').val(),
       makes: $('#MainContent_ddlMake option').map((i, el) => ({
         value: $(el).attr('value'),
         text: $(el).text().trim()
-      })).get().filter(opt => opt.value !== '0')
+      })).get().filter(opt => opt.value !== '0'),
+      scriptManager: $('input#ctl00_ScriptManager1_HiddenField').val() || ''
     };
   } catch (error) {
     console.error('Failed to get page state:', error.message);
     throw error;
   }
 }
+
 
 // Initialize or refresh cache
 async function refreshCache() {
@@ -99,10 +103,8 @@ app.post('/api/models', async (req, res) => {
       });
     }
 
-    // 1. Prepare the EXACT payload that UMVVS expects
     const payload = new URLSearchParams();
     payload.append('ctl00$ScriptManager1', 'ctl00$MainContent$UpdatePanel1|ctl00$MainContent$ddlMake');
-    payload.append('ctl00$MainContent$ddlMake', makeId);
     payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlMake');
     payload.append('__EVENTARGUMENT', '');
     payload.append('__LASTFOCUS', '');
@@ -110,45 +112,66 @@ app.post('/api/models', async (req, res) => {
     payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
     payload.append('__EVENTVALIDATION', tokens.eventValidation);
     payload.append('__ASYNCPOST', 'true');
+    payload.append('ctl00$MainContent$ddlMake', makeId);
     payload.append('ctl00$MainContent$ddlModel', '0');
     payload.append('ctl00$MainContent$ddlYear', '0');
     payload.append('ctl00$MainContent$ddlCountry', '0');
     payload.append('ctl00$MainContent$ddlFuel', '0');
     payload.append('ctl00$MainContent$ddlEngine', '0');
 
-    // 2. Add critical ASP.NET AJAX headers
     const headers = {
-      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       'Origin': 'https://umvvs.tra.go.tz',
       'Referer': 'https://umvvs.tra.go.tz/',
       'X-MicrosoftAjax': 'Delta=true',
-      'X-Requested-With': 'XMLHttpRequest'
+      'X-Requested-With': 'XMLHttpRequest',
+      'Cache-Control': 'no-cache'
     };
 
-    // 3. Make the request with delay to mimic human interaction
-    await new Promise(resolve => setTimeout(resolve, 500));
-    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), { headers });
+    // Add delay to mimic human interaction
+    await new Promise(resolve => setTimeout(resolve, 800));
+    
+    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), { 
+      headers,
+      maxRedirects: 0,
+      validateStatus: (status) => status >= 200 && status < 400
+    });
 
-    // 4. Parse the ASP.NET AJAX response format
-    const models = [];
-    
-    // First try to parse the updatePanel response
-    const updatePanelMatch = data.match(/\|updatePanel\|[^|]+\|([^|]+)\|/);
-    if (updatePanelMatch && updatePanelMatch[1]) {
-      const $ = cheerio.load(updatePanelMatch[1]);
-      $('select[id*="ddlModel"] option').each((i, el) => {
-        const value = $(el).attr('value');
-        if (value && value !== '0') {
-          models.push({
-            value: value,
-            text: $(el).text().replace(/&amp;/g, '&').trim()
-          });
-        }
-      });
+    // Enhanced response parsing
+    let models = [];
+    let newTokens = {
+      viewState: tokens.viewState,
+      viewStateGenerator: tokens.viewStateGenerator,
+      eventValidation: tokens.eventValidation
+    };
+
+    // Try to parse as ASP.NET AJAX response first
+    const parts = data.split('|');
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] === 'updatePanel' && parts[i+1] === 'MainContent_ddlPanel') {
+        const html = parts[i+2];
+        const $ = cheerio.load(html);
+        
+        // Extract models
+        $('select[id="MainContent_ddlModel"] option').each((i, el) => {
+          const value = $(el).attr('value');
+          if (value && value !== '0') {
+            models.push({
+              value: value,
+              text: $(el).text().trim()
+            });
+          }
+        });
+
+        // Extract new tokens from hidden fields
+        newTokens.viewState = $('input#__VIEWSTATE').val() || newTokens.viewState;
+        newTokens.eventValidation = $('input#__EVENTVALIDATION').val() || newTokens.eventValidation;
+        break;
+      }
     }
-    
-    // Fallback to full HTML parsing if updatePanel parsing fails
+
+    // Fallback to full HTML parsing if AJAX parsing failed
     if (models.length === 0) {
       const $ = cheerio.load(data);
       $('#MainContent_ddlModel option').each((i, el) => {
@@ -156,23 +179,18 @@ app.post('/api/models', async (req, res) => {
         if (value && value !== '0') {
           models.push({
             value: value,
-            text: $(el).text().replace(/&amp;/g, '&').trim()
+            text: $(el).text().trim()
           });
         }
       });
+      
+      // Update tokens from full page
+      newTokens.viewState = $('input#__VIEWSTATE').val() || newTokens.viewState;
+      newTokens.eventValidation = $('input#__EVENTVALIDATION').val() || newTokens.eventValidation;
     }
 
-    // 5. Extract new tokens from the response
-    const tokenRegex = /<input[^>]+__VIEWSTATE[^>]+value="([^"]*)"[^>]*>.*?<input[^>]+__EVENTVALIDATION[^>]+value="([^"]*)"[^>]*>/gs;
-    const tokenMatch = tokenRegex.exec(data);
-    const newTokens = {
-      viewState: tokenMatch?.[1] || tokens.viewState,
-      viewStateGenerator: tokens.viewStateGenerator,
-      eventValidation: tokenMatch?.[2] || tokens.eventValidation
-    };
-
     if (models.length === 0) {
-      throw new Error('No models found in response. The server might have returned an error page.');
+      throw new Error('No models found in response. The site structure may have changed.');
     }
 
     res.json({
@@ -188,284 +206,160 @@ app.post('/api/models', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch models',
-      details: error.message
+      details: error.message,
+      response: error.response?.data
     });
   }
 });
 
 
 // Get years for a specific model
-app.post('/api/years', async (req, res) => {
+app.post('/api/dropdown', async (req, res) => {
   try {
-    const { modelId, tokens } = req.body;
+    const { type, parentId, tokens } = req.body;
     
-    if (!modelId || !tokens) {
+    if (!type || !parentId || !tokens) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required parameters'
+        error: 'Missing required parameters (type, parentId, tokens)'
       });
     }
 
+    // Validate type
+    const validTypes = ['years', 'countries', 'fuel-types', 'engines'];
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid type. Must be one of: ${validTypes.join(', ')}`
+      });
+    }
+
+    // Map type to ASP.NET control IDs
+    const controlMap = {
+      'years': {
+        control: 'ddlYear',
+        target: 'ddlModel',
+        parentControl: 'ddlModel'
+      },
+      'countries': {
+        control: 'ddlCountry',
+        target: 'ddlYear',
+        parentControl: 'ddlYear'
+      },
+      'fuel-types': {
+        control: 'ddlFuel',
+        target: 'ddlCountry',
+        parentControl: 'ddlCountry'
+      },
+      'engines': {
+        control: 'ddlEngine',
+        target: 'ddlFuel',
+        parentControl: 'ddlFuel'
+      }
+    };
+
+    const config = controlMap[type];
     const payload = new URLSearchParams();
-    payload.append('ctl00$MainContent$ddlModel', modelId);
-    payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlModel');
+    
+    // Build the ASP.NET payload
+    payload.append(`ctl00$MainContent$${config.parentControl}`, parentId);
+    payload.append('__EVENTTARGET', `ctl00$MainContent$${config.target}`);
     payload.append('__EVENTARGUMENT', '');
     payload.append('__LASTFOCUS', '');
     payload.append('__VIEWSTATE', tokens.viewState);
     payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
     payload.append('__EVENTVALIDATION', tokens.eventValidation);
     payload.append('__ASYNCPOST', 'true');
+    payload.append('ctl00$ScriptManager1', `ctl00$MainContent$UpdatePanel1|ctl00$MainContent$${config.target}`);
 
-    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Origin': 'https://umvvs.tra.go.tz',
-        'Referer': 'https://umvvs.tra.go.tz/'
-      }
+    const headers = {
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Origin': 'https://umvvs.tra.go.tz',
+      'Referer': 'https://umvvs.tra.go.tz/',
+      'X-MicrosoftAjax': 'Delta=true',
+      'X-Requested-With': 'XMLHttpRequest'
+    };
+
+    // Add delay to mimic human interaction
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), { 
+      headers,
+      maxRedirects: 0,
+      validateStatus: (status) => status >= 200 && status < 400
     });
 
-    // Parse years
-    const years = [];
-    const yearRegex = /<option value="(\d+)">([^<]+)<\/option>/g;
-    let match;
-    
-    while ((match = yearRegex.exec(data)) !== null) {
-      if (match[1] !== '0') {
-        years.push({
-          value: match[1],
-          text: match[2].trim()
+    // Parse the response
+    let items = [];
+    let newTokens = {
+      viewState: tokens.viewState,
+      viewStateGenerator: tokens.viewStateGenerator,
+      eventValidation: tokens.eventValidation
+    };
+
+    // Try to parse as ASP.NET AJAX response
+    const parts = data.split('|');
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] === 'updatePanel' && parts[i+1] === 'MainContent_ddlPanel') {
+        const html = parts[i+2];
+        const $ = cheerio.load(html);
+        
+        // Extract items
+        $(`select[id="MainContent_${config.control}"] option`).each((i, el) => {
+          const value = $(el).attr('value');
+          if (value && value !== '0') {
+            items.push({
+              value: value,
+              text: $(el).text().trim()
+            });
+          }
         });
+
+        // Extract new tokens
+        newTokens.viewState = $('input#__VIEWSTATE').val() || newTokens.viewState;
+        newTokens.eventValidation = $('input#__EVENTVALIDATION').val() || newTokens.eventValidation;
+        break;
       }
     }
 
-    // Extract new tokens
-    const $ = cheerio.load(data);
-    const newTokens = {
-      viewState: $('input#__VIEWSTATE').val(),
-      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
-      eventValidation: $('input#__EVENTVALIDATION').val()
-    };
-
-    res.json({
-      success: true,
-      data: {
-        years,
-        tokens: newTokens
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch years',
-      details: error.message
-    });
-  }
-});
-
-// Get countries for a specific year
-app.post('/api/countries', async (req, res) => {
-  try {
-    const { yearId, tokens } = req.body;
-    
-    if (!yearId || !tokens) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required parameters'
+    // Fallback to full HTML parsing if AJAX parsing failed
+    if (items.length === 0) {
+      const $ = cheerio.load(data);
+      $(`#MainContent_${config.control} option`).each((i, el) => {
+        const value = $(el).attr('value');
+        if (value && value !== '0') {
+          items.push({
+            value: value,
+            text: $(el).text().trim()
+          });
+        }
       });
+      
+      // Update tokens from full page
+      newTokens.viewState = $('input#__VIEWSTATE').val() || newTokens.viewState;
+      newTokens.eventValidation = $('input#__EVENTVALIDATION').val() || newTokens.eventValidation;
     }
 
-    const payload = new URLSearchParams();
-    payload.append('ctl00$MainContent$ddlYear', yearId);
-    payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlYear');
-    payload.append('__EVENTARGUMENT', '');
-    payload.append('__LASTFOCUS', '');
-    payload.append('__VIEWSTATE', tokens.viewState);
-    payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
-    payload.append('__EVENTVALIDATION', tokens.eventValidation);
-    payload.append('__ASYNCPOST', 'true');
-
-    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Origin': 'https://umvvs.tra.go.tz',
-        'Referer': 'https://umvvs.tra.go.tz/'
-      }
-    });
-
-    // Parse countries
-    const countries = [];
-    const countryRegex = /<option value="(\d+)">([^<]+)<\/option>/g;
-    let match;
-    
-    while ((match = countryRegex.exec(data)) !== null) {
-      if (match[1] !== '0') {
-        countries.push({
-          value: match[1],
-          text: match[2].trim()
-        });
-      }
+    if (items.length === 0) {
+      console.warn(`No ${type} found in response.`, data);
     }
-
-    // Extract new tokens
-    const $ = cheerio.load(data);
-    const newTokens = {
-      viewState: $('input#__VIEWSTATE').val(),
-      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
-      eventValidation: $('input#__EVENTVALIDATION').val()
-    };
 
     res.json({
       success: true,
       data: {
-        countries,
+        [type]: items,
         tokens: newTokens
       }
     });
+
   } catch (error) {
+    console.error(`${type} fetch error:`, error.message);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch countries',
-      details: error.message
-    });
-  }
-});
-
-// Get fuel types for a specific country
-app.post('/api/fuel-types', async (req, res) => {
-  try {
-    const { countryId, tokens } = req.body;
-    
-    if (!countryId || !tokens) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required parameters'
-      });
-    }
-
-    const payload = new URLSearchParams();
-    payload.append('ctl00$MainContent$ddlCountry', countryId);
-    payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlCountry');
-    payload.append('__EVENTARGUMENT', '');
-    payload.append('__LASTFOCUS', '');
-    payload.append('__VIEWSTATE', tokens.viewState);
-    payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
-    payload.append('__EVENTVALIDATION', tokens.eventValidation);
-    payload.append('__ASYNCPOST', 'true');
-
-    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Origin': 'https://umvvs.tra.go.tz',
-        'Referer': 'https://umvvs.tra.go.tz/'
-      }
-    });
-
-    // Parse fuel types
-    const fuelTypes = [];
-    const fuelRegex = /<option value="(\d+)">([^<]+)<\/option>/g;
-    let match;
-    
-    while ((match = fuelRegex.exec(data)) !== null) {
-      if (match[1] !== '0') {
-        fuelTypes.push({
-          value: match[1],
-          text: match[2].trim()
-        });
-      }
-    }
-
-    // Extract new tokens
-    const $ = cheerio.load(data);
-    const newTokens = {
-      viewState: $('input#__VIEWSTATE').val(),
-      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
-      eventValidation: $('input#__EVENTVALIDATION').val()
-    };
-
-    res.json({
-      success: true,
-      data: {
-        fuelTypes,
-        tokens: newTokens
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch fuel types',
-      details: error.message
-    });
-  }
-});
-
-// Get engines for a specific fuel type
-app.post('/api/engines', async (req, res) => {
-  try {
-    const { fuelTypeId, tokens } = req.body;
-    
-    if (!fuelTypeId || !tokens) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required parameters'
-      });
-    }
-
-    const payload = new URLSearchParams();
-    payload.append('ctl00$MainContent$ddlFuel', fuelTypeId);
-    payload.append('__EVENTTARGET', 'ctl00$MainContent$ddlFuel');
-    payload.append('__EVENTARGUMENT', '');
-    payload.append('__LASTFOCUS', '');
-    payload.append('__VIEWSTATE', tokens.viewState);
-    payload.append('__VIEWSTATEGENERATOR', tokens.viewStateGenerator || 'CA0B0334');
-    payload.append('__EVENTVALIDATION', tokens.eventValidation);
-    payload.append('__ASYNCPOST', 'true');
-
-    const { data } = await axios.post('https://umvvs.tra.go.tz', payload.toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Origin': 'https://umvvs.tra.go.tz',
-        'Referer': 'https://umvvs.tra.go.tz/'
-      }
-    });
-
-    // Parse engines
-    const engines = [];
-    const engineRegex = /<option value="(\d+)">([^<]+)<\/option>/g;
-    let match;
-    
-    while ((match = engineRegex.exec(data)) !== null) {
-      if (match[1] !== '0') {
-        engines.push({
-          value: match[1],
-          text: match[2].trim()
-        });
-      }
-    }
-
-    // Extract new tokens
-    const $ = cheerio.load(data);
-    const newTokens = {
-      viewState: $('input#__VIEWSTATE').val(),
-      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val(),
-      eventValidation: $('input#__EVENTVALIDATION').val()
-    };
-
-    res.json({
-      success: true,
-      data: {
-        engines,
-        tokens: newTokens
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch engines',
-      details: error.message
+      error: `Failed to fetch ${type}`,
+      details: error.message,
+      response: error.response?.data
     });
   }
 });
