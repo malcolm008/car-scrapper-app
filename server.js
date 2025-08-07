@@ -117,64 +117,43 @@ async function postWithState(payload, currentState, referer = BASE_URL) {
 
 function parseAjaxResponse(responseData) {
   const parts = responseData.split('|');
-  const result = {
-    viewState: null,
-    viewStateGenerator: null,
-    eventValidation: null,
-    html: null,
-    hiddenFields: {},
-    scripts: [],
-    dataItems: {}
-  };
-
+  const result = {};
+  
+  // 1. First try standard ASP.NET AJAX parsing
   for (let i = 0; i < parts.length; i++) {
-    const part = parts[i];
+    // Look for the update panel declaration
+    if (parts[i].includes('ddlPanel') && parts[i+1]) {
+      result.html = parts[i+1];
+      break;
+    }
     
-    // Handle state fields
-    if (part === '__VIEWSTATE' && parts[i+1]) {
+    // Get updated ViewState if present
+    if (parts[i] === '__VIEWSTATE' && parts[i+1]) {
       result.viewState = parts[i+1];
-    } 
-    else if (part === '__VIEWSTATEGENERATOR' && parts[i+1]) {
+    }
+    if (parts[i] === '__VIEWSTATEGENERATOR' && parts[i+1]) {
       result.viewStateGenerator = parts[i+1];
-    } 
-    else if (part === '__EVENTVALIDATION' && parts[i+1]) {
+    }
+    if (parts[i] === '__EVENTVALIDATION' && parts[i+1]) {
       result.eventValidation = parts[i+1];
-    }
-    // Handle update panels
-    else if (part === 'updatePanel' && parts[i+1] && parts[i+2]) {
-      const panelId = parts[i+1];
-      result.html = parts[i+2];
-      result.updatedPanels = result.updatedPanels || [];
-      result.updatedPanels.push(panelId);
-    }
-    // Handle hidden fields
-    else if (part === 'hiddenField' && parts[i+1] && parts[i+2]) {
-      result.hiddenFields[parts[i+1]] = parts[i+2];
-    }
-    // Handle script blocks
-    else if (part === 'scriptBlock' && parts[i+1] && parts[i+2]) {
-      result.scripts.push({
-        type: parts[i+1],
-        content: parts[i+2]
-      });
-    }
-    // Handle data items
-    else if (part === 'dataItem' && parts[i+1] && parts[i+2]) {
-      result.dataItems[parts[i+1]] = parts[i+2];
-    }
-    // Handle error messages
-    else if (part === 'error' && parts[i+1]) {
-      result.error = parts[i+1];
     }
   }
 
-  // Fallback: If no HTML found but we have updated panels, try to find content
-  if (!result.html && result.updatedPanels) {
-    for (let i = 0; i < parts.length; i++) {
-      if (result.updatedPanels.includes(parts[i]) && parts[i+1]) {
-        result.html = parts[i+1];
-        break;
-      }
+  // 2. Fallback: Search for HTML select elements
+  if (!result.html) {
+    const htmlCandidate = parts.find(part => 
+      part.includes('<select') || 
+      part.includes('option') ||
+      part.includes('ddlModel') // Model dropdown indicator
+    );
+    if (htmlCandidate) result.html = htmlCandidate;
+  }
+
+  // 3. If still no HTML, check if this is an error response
+  if (!result.html) {
+    const errorPart = parts.find(part => part.includes('error'));
+    if (errorPart) {
+      result.error = errorPart;
     }
   }
 
