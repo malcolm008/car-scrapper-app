@@ -208,10 +208,13 @@ app.get('/api/init', async (req, res) => {
 app.post('/api/models', async (req, res) => {
   try {
     const { makeId, tokens } = req.body;
+
+    console.log("Making request with makeId:", makeId); // Debug lo
+
     if (!makeId) throw new Error('Make ID is required');
     if (!tokens) throw new Error('State tokens are required');
 
-    const { parsed, newState } = await postWithState({
+    const { data, parsed, newState } = await postWithState({
       'ctl00$ScriptManager1': 'ctl00$MainContent$UpdatePanel1|ctl00$MainContent$ddlMake',
       '__EVENTTARGET': 'ctl00$MainContent$ddlMake',
       'ctl00$MainContent$ddlMake': makeId,
@@ -222,7 +225,10 @@ app.post('/api/models', async (req, res) => {
       'ctl00$MainContent$ddlEngine': '0'
     }, tokens);
 
+    console.log("Raw response data:", data);
+
     if (!parsed.html) {
+      console.log("Parsed response (no html):", parsed);
       throw new Error('No HTML content in response');
     }
 
