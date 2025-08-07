@@ -36,6 +36,10 @@ async function getFreshState() {
       viewState: $('input#__VIEWSTATE').val(),
       viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val() || 'CA0B0334',
       eventValidation: $('input#__EVENTVALIDATION').val(),
+      eventTarget: $('input#__EVENTTARGET').val() || '',
+      eventArgument: $('input#__EVENTARGUMENT').val() || '',
+      lastFocus: $('input#__LASTFOCUS').val() || '',
+      requestVerificationToken: $('input[name="__RequestVerificationToken"]').val() || '',
       makes: $('#MainContent_ddlMake option').map((i, el) => ({
         value: $(el).attr('value'),
         text: $(el).text().trim()
@@ -47,35 +51,28 @@ async function getFreshState() {
   }
 }
 
-function parseAjaxResponse(responseData) {
-  const parts = responseData.split('|');
-  const result = {};
-  
-  for (let i = 0; i < parts.length; i++) {
-    if (parts[i] === '__VIEWSTATE') {
-      result.viewState = parts[i+1];
-    } else if (parts[i] === '__VIEWSTATEGENERATOR') {
-      result.viewStateGenerator = parts[i+1];
-    } else if (parts[i] === '__EVENTVALIDATION') {
-      result.eventValidation = parts[i+1];
-    } else if (parts[i] === 'updatePanel' && parts[i+1] === 'MainContent_ddlPanel') {
-      result.html = parts[i+2];
-    }
-  }
-  
-  return result;
-}
-
 async function postWithState(payload, currentState, referer = BASE_URL) {
   const formData = new URLSearchParams();
+  
+  // Add all ASP.NET hidden fields
   formData.append('__VIEWSTATE', currentState.viewState);
   formData.append('__VIEWSTATEGENERATOR', currentState.viewStateGenerator);
   formData.append('__EVENTVALIDATION', currentState.eventValidation);
+  formData.append('__EVENTTARGET', payload.__EVENTTARGET || currentState.eventTarget);
+  formData.append('__EVENTARGUMENT', currentState.eventArgument);
+  formData.append('__LASTFOCUS', currentState.lastFocus);
+  
+  if (currentState.requestVerificationToken) {
+    formData.append('__RequestVerificationToken', currentState.requestVerificationToken);
+  }
+
   formData.append('__ASYNCPOST', 'true');
   
   // Add the payload
   for (const [key, value] of Object.entries(payload)) {
-    formData.append(key, value);
+    if (!key.startsWith('__')) { // Skip ASP.NET reserved fields
+      formData.append(key, value);
+    }
   }
 
   const headers = {
@@ -89,7 +86,7 @@ async function postWithState(payload, currentState, referer = BASE_URL) {
   };
 
   // Add delay to avoid rate limiting
-  await new Promise(resolve => setTimeout(resolve, 1000));
+  await new Promise(resolve => setTimeout(resolve, 1500));
 
   try {
     const response = await axiosInstance.post(BASE_URL, formData.toString(), { 
@@ -105,13 +102,83 @@ async function postWithState(payload, currentState, referer = BASE_URL) {
       newState: {
         viewState: parsed.viewState || currentState.viewState,
         viewStateGenerator: parsed.viewStateGenerator || currentState.viewStateGenerator,
-        eventValidation: parsed.eventValidation || currentState.eventValidation
+        eventValidation: parsed.eventValidation || currentState.eventValidation,
+        eventTarget: currentState.eventTarget,
+        eventArgument: currentState.eventArgument,
+        lastFocus: currentState.lastFocus,
+        requestVerificationToken: currentState.requestVerificationToken
       }
     };
   } catch (error) {
     console.error('POST request failed:', error.message);
     throw error;
   }
+}
+
+function parseAjaxResponse(responseData) {
+  const parts = responseData.split('|');
+  const result = {
+    viewState: null,
+    viewStateGenerator: null,
+    eventValidation: null,
+    html: null,
+    hiddenFields: {},
+    scripts: [],
+    dataItems: {}
+  };
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    
+    // Handle state fields
+    if (part === '__VIEWSTATE' && parts[i+1]) {
+      result.viewState = parts[i+1];
+    } 
+    else if (part === '__VIEWSTATEGENERATOR' && parts[i+1]) {
+      result.viewStateGenerator = parts[i+1];
+    } 
+    else if (part === '__EVENTVALIDATION' && parts[i+1]) {
+      result.eventValidation = parts[i+1];
+    }
+    // Handle update panels
+    else if (part === 'updatePanel' && parts[i+1] && parts[i+2]) {
+      const panelId = parts[i+1];
+      result.html = parts[i+2];
+      result.updatedPanels = result.updatedPanels || [];
+      result.updatedPanels.push(panelId);
+    }
+    // Handle hidden fields
+    else if (part === 'hiddenField' && parts[i+1] && parts[i+2]) {
+      result.hiddenFields[parts[i+1]] = parts[i+2];
+    }
+    // Handle script blocks
+    else if (part === 'scriptBlock' && parts[i+1] && parts[i+2]) {
+      result.scripts.push({
+        type: parts[i+1],
+        content: parts[i+2]
+      });
+    }
+    // Handle data items
+    else if (part === 'dataItem' && parts[i+1] && parts[i+2]) {
+      result.dataItems[parts[i+1]] = parts[i+2];
+    }
+    // Handle error messages
+    else if (part === 'error' && parts[i+1]) {
+      result.error = parts[i+1];
+    }
+  }
+
+  // Fallback: If no HTML found but we have updated panels, try to find content
+  if (!result.html && result.updatedPanels) {
+    for (let i = 0; i < parts.length; i++) {
+      if (result.updatedPanels.includes(parts[i]) && parts[i+1]) {
+        result.html = parts[i+1];
+        break;
+      }
+    }
+  }
+
+  return result;
 }
 
 // API Endpoints
