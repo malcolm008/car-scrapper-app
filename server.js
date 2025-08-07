@@ -54,26 +54,24 @@ async function getFreshState() {
 async function postWithState(payload, currentState, referer = BASE_URL) {
   const formData = new URLSearchParams();
   
-  // Add all ASP.NET hidden fields
+  // Add all fields in the EXACT order seen in the network request
+  formData.append('ctl00$ctl08', payload['ctl00$ctl08'] || '');
+  formData.append('__EVENTTARGET', payload.__EVENTTARGET || '');
+  formData.append('__EVENTARGUMENT', '');
+  formData.append('__LASTFOCUS', '');
   formData.append('__VIEWSTATE', currentState.viewState);
   formData.append('__VIEWSTATEGENERATOR', currentState.viewStateGenerator);
   formData.append('__EVENTVALIDATION', currentState.eventValidation);
-  formData.append('__EVENTTARGET', payload.__EVENTTARGET || currentState.eventTarget);
-  formData.append('__EVENTARGUMENT', currentState.eventArgument);
-  formData.append('__LASTFOCUS', currentState.lastFocus);
   
-  if (currentState.requestVerificationToken) {
-    formData.append('__RequestVerificationToken', currentState.requestVerificationToken);
-  }
-
+  // Add the form fields in the correct order
+  formData.append('ctl00$MainContent$ddlMake', payload['ctl00$MainContent$ddlMake'] || '0');
+  formData.append('ctl00$MainContent$ddlModel', payload['ctl00$MainContent$ddlModel'] || '0');
+  formData.append('ctl00$MainContent$ddlYear', payload['ctl00$MainContent$ddlYear'] || '0');
+  formData.append('ctl00$MainContent$ddlCountry', payload['ctl00$MainContent$ddlCountry'] || '0');
+  formData.append('ctl00$MainContent$ddlFuel', payload['ctl00$MainContent$ddlFuel'] || '0');
+  formData.append('ctl00$MainContent$ddlEngine', payload['ctl00$MainContent$ddlEngine'] || '0');
+  
   formData.append('__ASYNCPOST', 'true');
-  
-  // Add the payload
-  for (const [key, value] of Object.entries(payload)) {
-    if (!key.startsWith('__')) { // Skip ASP.NET reserved fields
-      formData.append(key, value);
-    }
-  }
 
   const headers = {
     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -81,12 +79,11 @@ async function postWithState(payload, currentState, referer = BASE_URL) {
     'Origin': BASE_URL,
     'Referer': referer,
     'X-MicrosoftAjax': 'Delta=true',
-    'X-Requested-With': 'XMLHttpRequest',
-    'Cache-Control': 'no-cache'
+    'X-Requested-With': 'XMLHttpRequest'
   };
 
   // Add delay to avoid rate limiting
-  await new Promise(resolve => setTimeout(resolve, 1500));
+  await new Promise(resolve => setTimeout(resolve, 1000));
 
   try {
     const response = await axiosInstance.post(BASE_URL, formData.toString(), { 
@@ -94,72 +91,65 @@ async function postWithState(payload, currentState, referer = BASE_URL) {
       maxRedirects: 0
     });
 
-    const parsed = parseAjaxResponse(response.data);
-    
-    return {
-      data: response.data,
-      parsed: parsed,
-      newState: {
-        viewState: parsed.viewState || currentState.viewState,
-        viewStateGenerator: parsed.viewStateGenerator || currentState.viewStateGenerator,
-        eventValidation: parsed.eventValidation || currentState.eventValidation,
-        eventTarget: currentState.eventTarget,
-        eventArgument: currentState.eventArgument,
-        lastFocus: currentState.lastFocus,
-        requestVerificationToken: currentState.requestVerificationToken
-      }
-    };
+    return parseAjaxResponse(response.data, currentState);
   } catch (error) {
     console.error('POST request failed:', error.message);
     throw error;
   }
 }
 
-function parseAjaxResponse(responseData) {
+function parseAjaxResponse(responseData, currentState) {
   const parts = responseData.split('|');
-  const result = {};
+  const result = {
+    viewState: currentState.viewState,
+    viewStateGenerator: currentState.viewStateGenerator,
+    eventValidation: currentState.eventValidation,
+    html: null
+  };
   
-  // 1. First try standard ASP.NET AJAX parsing
+  // Parse the response parts
   for (let i = 0; i < parts.length; i++) {
-    // Look for the update panel declaration
-    if (parts[i].includes('ddlPanel') && parts[i+1]) {
-      result.html = parts[i+1];
-      break;
-    }
+    const part = parts[i];
     
-    // Get updated ViewState if present
-    if (parts[i] === '__VIEWSTATE' && parts[i+1]) {
-      result.viewState = parts[i+1];
+    // Check for ViewState updates
+    if (part === '__VIEWSTATE') {
+      result.viewState = parts[i+1] || currentState.viewState;
+      i++; // Skip next part since we've consumed it
     }
-    if (parts[i] === '__VIEWSTATEGENERATOR' && parts[i+1]) {
-      result.viewStateGenerator = parts[i+1];
+    else if (part === '__VIEWSTATEGENERATOR') {
+      result.viewStateGenerator = parts[i+1] || currentState.viewStateGenerator;
+      i++;
     }
-    if (parts[i] === '__EVENTVALIDATION' && parts[i+1]) {
-      result.eventValidation = parts[i+1];
+    else if (part === '__EVENTVALIDATION') {
+      result.eventValidation = parts[i+1] || currentState.eventValidation;
+      i++;
     }
-  }
-
-  // 2. Fallback: Search for HTML select elements
-  if (!result.html) {
-    const htmlCandidate = parts.find(part => 
-      part.includes('<select') || 
-      part.includes('option') ||
-      part.includes('ddlModel') // Model dropdown indicator
-    );
-    if (htmlCandidate) result.html = htmlCandidate;
-  }
-
-  // 3. If still no HTML, check if this is an error response
-  if (!result.html) {
-    const errorPart = parts.find(part => part.includes('error'));
-    if (errorPart) {
-      result.error = errorPart;
+    // Look for the HTML content (either the panel update or select options)
+    else if (part.includes('ddlPanel') || part.includes('<select') || part.includes('option')) {
+      // The HTML content is typically in the next part
+      if (parts[i+1] && (parts[i+1].includes('<select') || parts[i+1].includes('option'))) {
+        result.html = parts[i+1];
+        i++;
+      } else if (part.includes('<select')) {
+        result.html = part;
+      }
     }
   }
 
-  return result;
+  return {
+    data: responseData,
+    parsed: result,
+    newState: {
+      viewState: result.viewState,
+      viewStateGenerator: result.viewStateGenerator,
+      eventValidation: result.eventValidation,
+      eventTarget: '',
+      eventArgument: '',
+      lastFocus: '',
+      requestVerificationToken: currentState.requestVerificationToken
+    }
+  };
 }
-
 // API Endpoints
 app.get('/api/init', async (req, res) => {
   try {
@@ -188,29 +178,24 @@ app.post('/api/models', async (req, res) => {
   try {
     const { makeId, tokens } = req.body;
 
-    console.log("Making request with makeId:", makeId); // Debug lo
-
     if (!makeId) throw new Error('Make ID is required');
     if (!tokens) throw new Error('State tokens are required');
 
-    const { data, parsed, newState } = await postWithState({
-      'ctl00$ScriptManager1': 'ctl00$MainContent$UpdatePanel1|ctl00$MainContent$ddlMake',
+    const payload = {
+      'ctl00$ctl08': `ctl00$MainContent$ddlPanel|${req.body.__EVENTTARGET || 'ctl00$MainContent$ddlMake'}`,
       '__EVENTTARGET': 'ctl00$MainContent$ddlMake',
-      'ctl00$MainContent$ddlMake': makeId,
-      'ctl00$MainContent$ddlModel': '0',
-      'ctl00$MainContent$ddlYear': '0',
-      'ctl00$MainContent$ddlCountry': '0',
-      'ctl00$MainContent$ddlFuel': '0',
-      'ctl00$MainContent$ddlEngine': '0'
-    }, tokens);
+      'ctl00$MainContent$ddlMake': makeId
+      // Other fields will default to '0' in postWithState
+    };
 
-    console.log("Raw response data:", data);
+    const { parsed, newState } = await postWithState(payload, tokens);
 
     if (!parsed.html) {
-      console.log("Parsed response (no html):", parsed);
+      console.log('Full response parts:', parsed.data.split('|'));
       throw new Error('No HTML content in response');
     }
 
+    // Load the HTML and extract models
     const $ = cheerio.load(parsed.html);
     const models = $('#MainContent_ddlModel option').map((i, el) => ({
       value: $(el).attr('value'),
@@ -229,7 +214,8 @@ app.post('/api/models', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch models',
-      details: error.message
+      details: error.message,
+      response: error.response?.data // Include response if available
     });
   }
 });
