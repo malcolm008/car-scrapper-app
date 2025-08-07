@@ -3,7 +3,18 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const { URLSearchParams } = require('url');
 const app = express();
+const cors = require('cors');
 
+// Enable CORS for all routes
+app.use(cors({
+  origin: ['https://crptq-group.co.tz', 'http://localhost:3000'], // Add your domains
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
+// Handle preflight requests
+app.options('*', cors());
 
 // Middleware
 app.use(express.json());
