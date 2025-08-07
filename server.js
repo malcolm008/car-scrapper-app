@@ -1,104 +1,98 @@
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const cors = require('cors');
 const { URLSearchParams } = require('url');
 const app = express();
 
 // Middleware
-app.use(cors());
 app.use(express.json());
 
 // Constants
 const BASE_URL = 'https://umvvs.tra.go.tz';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-// Session handling
+// Configure axios instance
 const axiosInstance = axios.create({
+  baseURL: BASE_URL,
   headers: {
     'User-Agent': USER_AGENT,
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.5',
     'Accept-Encoding': 'gzip, deflate, br',
     'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1'
+    'Origin': BASE_URL,
+    'Referer': BASE_URL,
+    'X-Requested-With': 'XMLHttpRequest',
+    'X-MicrosoftAjax': 'Delta=true'
   },
   withCredentials: true
 });
 
-// Helper Functions
-async function getFreshState() {
-  try {
-    const response = await axiosInstance.get(BASE_URL);
-    const $ = cheerio.load(response.data);
-    
-    return {
-      viewState: $('input#__VIEWSTATE').val(),
-      viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val() || 'CA0B0334',
-      eventValidation: $('input#__EVENTVALIDATION').val(),
-      eventTarget: $('input#__EVENTTARGET').val() || '',
-      eventArgument: $('input#__EVENTARGUMENT').val() || '',
-      lastFocus: $('input#__LASTFOCUS').val() || '',
-      requestVerificationToken: $('input[name="__RequestVerificationToken"]').val() || '',
-      makes: $('#MainContent_ddlMake option').map((i, el) => ({
-        value: $(el).attr('value'),
-        text: $(el).text().trim()
-      })).get().filter(opt => opt.value !== '0')
-    };
-  } catch (error) {
-    console.error('Failed to get fresh state:', error.message);
-    throw error;
-  }
+// Helper to parse initial state
+async function getInitialState() {
+  const response = await axiosInstance.get('/');
+  const $ = cheerio.load(response.data);
+  
+  return {
+    viewState: $('input#__VIEWSTATE').val(),
+    viewStateGenerator: $('input#__VIEWSTATEGENERATOR').val() || 'CA0B0334',
+    eventValidation: $('input#__EVENTVALIDATION').val(),
+    antiXsrfToken: $('input[name="__RequestVerificationToken"]').val() || '',
+    makes: $('#MainContent_ddlMake option').map((i, el) => ({
+      value: $(el).attr('value'),
+      text: $(el).text().trim()
+    })).get().filter(opt => opt.value !== '0')
+  };
 }
 
-async function postWithState(payload, currentState, referer = BASE_URL) {
+// Helper to make ASP.NET post requests
+async function postFormData(payload, currentState) {
   const formData = new URLSearchParams();
   
-  // Add all fields in the EXACT order seen in the network request
-  formData.append('ctl00$ctl08', payload['ctl00$ctl08'] || '');
-  formData.append('__EVENTTARGET', payload.__EVENTTARGET || '');
+  // Add all required fields in EXACT order seen in network trace
+  formData.append('ctl00$ctl08', `ctl00$MainContent$ddlPanel|${payload.__EVENTTARGET}`);
+  formData.append('__EVENTTARGET', payload.__EVENTTARGET);
   formData.append('__EVENTARGUMENT', '');
   formData.append('__LASTFOCUS', '');
   formData.append('__VIEWSTATE', currentState.viewState);
   formData.append('__VIEWSTATEGENERATOR', currentState.viewStateGenerator);
   formData.append('__EVENTVALIDATION', currentState.eventValidation);
   
-  // Add the form fields in the correct order
-  formData.append('ctl00$MainContent$ddlMake', payload['ctl00$MainContent$ddlMake'] || '0');
-  formData.append('ctl00$MainContent$ddlModel', payload['ctl00$MainContent$ddlModel'] || '0');
-  formData.append('ctl00$MainContent$ddlYear', payload['ctl00$MainContent$ddlYear'] || '0');
-  formData.append('ctl00$MainContent$ddlCountry', payload['ctl00$MainContent$ddlCountry'] || '0');
-  formData.append('ctl00$MainContent$ddlFuel', payload['ctl00$MainContent$ddlFuel'] || '0');
-  formData.append('ctl00$MainContent$ddlEngine', payload['ctl00$MainContent$ddlEngine'] || '0');
+  // Add form fields
+  formData.append('ctl00$MainContent$ddlMake', payload.makeId || '0');
+  formData.append('ctl00$MainContent$ddlModel', payload.modelId || '0');
+  formData.append('ctl00$MainContent$ddlYear', payload.yearId || '0');
+  formData.append('ctl00$MainContent$ddlCountry', payload.countryId || '0');
+  formData.append('ctl00$MainContent$ddlFuel', payload.fuelTypeId || '0');
+  formData.append('ctl00$MainContent$ddlEngine', payload.engineId || '0');
   
   formData.append('__ASYNCPOST', 'true');
-
-  const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-    'User-Agent': USER_AGENT,
-    'Origin': BASE_URL,
-    'Referer': referer,
-    'X-MicrosoftAjax': 'Delta=true',
-    'X-Requested-With': 'XMLHttpRequest'
-  };
+  
+  // Add anti-CSRF token if available
+  if (currentState.antiXsrfToken) {
+    formData.append('__RequestVerificationToken', currentState.antiXsrfToken);
+  }
 
   // Add delay to avoid rate limiting
   await new Promise(resolve => setTimeout(resolve, 1000));
 
   try {
-    const response = await axiosInstance.post(BASE_URL, formData.toString(), { 
-      headers,
-      maxRedirects: 0
+    const response = await axiosInstance.post('/', formData.toString(), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Referer': BASE_URL
+      }
     });
 
-    return parseAjaxResponse(response.data, currentState);
+    return parseResponse(response.data, currentState);
   } catch (error) {
     console.error('POST request failed:', error.message);
     throw error;
   }
 }
 
-function parseAjaxResponse(responseData, currentState) {
+// Parse the ASP.NET AJAX response
+function parseResponse(responseData, currentState) {
   const parts = responseData.split('|');
   const result = {
     viewState: currentState.viewState,
@@ -107,32 +101,21 @@ function parseAjaxResponse(responseData, currentState) {
     html: null
   };
   
-  // Parse the response parts
+  // Parse response parts
   for (let i = 0; i < parts.length; i++) {
-    const part = parts[i];
-    
-    // Check for ViewState updates
-    if (part === '__VIEWSTATE') {
-      result.viewState = parts[i+1] || currentState.viewState;
-      i++; // Skip next part since we've consumed it
-    }
-    else if (part === '__VIEWSTATEGENERATOR') {
-      result.viewStateGenerator = parts[i+1] || currentState.viewStateGenerator;
+    if (parts[i] === '__VIEWSTATE' && parts[i+1]) {
+      result.viewState = parts[i+1];
       i++;
-    }
-    else if (part === '__EVENTVALIDATION') {
-      result.eventValidation = parts[i+1] || currentState.eventValidation;
+    } else if (parts[i] === '__VIEWSTATEGENERATOR' && parts[i+1]) {
+      result.viewStateGenerator = parts[i+1];
       i++;
-    }
-    // Look for the HTML content (either the panel update or select options)
-    else if (part.includes('ddlPanel') || part.includes('<select') || part.includes('option')) {
-      // The HTML content is typically in the next part
-      if (parts[i+1] && (parts[i+1].includes('<select') || parts[i+1].includes('option'))) {
-        result.html = parts[i+1];
-        i++;
-      } else if (part.includes('<select')) {
-        result.html = part;
-      }
+    } else if (parts[i] === '__EVENTVALIDATION' && parts[i+1]) {
+      result.eventValidation = parts[i+1];
+      i++;
+    } else if (parts[i].includes('ddlPanel') && parts[i+1] && 
+              (parts[i+1].includes('select') || parts[i+1].includes('option'))) {
+      result.html = parts[i+1];
+      i++;
     }
   }
 
@@ -143,17 +126,26 @@ function parseAjaxResponse(responseData, currentState) {
       viewState: result.viewState,
       viewStateGenerator: result.viewStateGenerator,
       eventValidation: result.eventValidation,
-      eventTarget: '',
-      eventArgument: '',
-      lastFocus: '',
-      requestVerificationToken: currentState.requestVerificationToken
+      antiXsrfToken: currentState.antiXsrfToken
     }
   };
 }
+
+// Extract options from HTML
+function extractOptions(html, selector) {
+  const $ = cheerio.load(html);
+  return $(selector).map((i, el) => ({
+    value: $(el).attr('value'),
+    text: $(el).text().trim()
+  })).get().filter(opt => opt.value !== '0');
+}
+
 // API Endpoints
+
+// Get initial state and makes
 app.get('/api/init', async (req, res) => {
   try {
-    const state = await getFreshState();
+    const state = await getInitialState();
     res.json({
       success: true,
       data: {
@@ -161,7 +153,8 @@ app.get('/api/init', async (req, res) => {
         tokens: {
           viewState: state.viewState,
           viewStateGenerator: state.viewStateGenerator,
-          eventValidation: state.eventValidation
+          eventValidation: state.eventValidation,
+          antiXsrfToken: state.antiXsrfToken
         }
       }
     });
@@ -174,33 +167,23 @@ app.get('/api/init', async (req, res) => {
   }
 });
 
+// Get models for a make
 app.post('/api/models', async (req, res) => {
   try {
     const { makeId, tokens } = req.body;
-
     if (!makeId) throw new Error('Make ID is required');
-    if (!tokens) throw new Error('State tokens are required');
+    if (!tokens) throw new Error('Tokens are required');
 
-    const payload = {
-      'ctl00$ctl08': `ctl00$MainContent$ddlPanel|${req.body.__EVENTTARGET || 'ctl00$MainContent$ddlMake'}`,
-      '__EVENTTARGET': 'ctl00$MainContent$ddlMake',
-      'ctl00$MainContent$ddlMake': makeId
-      // Other fields will default to '0' in postWithState
-    };
-
-    const { parsed, newState } = await postWithState(payload, tokens);
+    const { parsed, newState } = await postFormData({
+      __EVENTTARGET: 'ctl00$MainContent$ddlMake',
+      makeId: makeId
+    }, tokens);
 
     if (!parsed.html) {
-      console.log('Full response parts:', parsed.data.split('|'));
       throw new Error('No HTML content in response');
     }
 
-    // Load the HTML and extract models
-    const $ = cheerio.load(parsed.html);
-    const models = $('#MainContent_ddlModel option').map((i, el) => ({
-      value: $(el).attr('value'),
-      text: $(el).text().trim()
-    })).get().filter(opt => opt.value !== '0');
+    const models = extractOptions(parsed.html, '#MainContent_ddlModel option');
 
     res.json({
       success: true,
@@ -210,44 +193,33 @@ app.post('/api/models', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Model fetch error:', error);
+    console.error('Error fetching models:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch models',
-      details: error.message,
-      response: error.response?.data // Include response if available
+      details: error.message
     });
   }
 });
 
-// Add similar endpoints for other dropdowns (years, countries, etc.)
-
+// Get years for a model
 app.post('/api/years', async (req, res) => {
   try {
     const { makeId, modelId, tokens } = req.body;
     if (!makeId || !modelId) throw new Error('Make and Model IDs are required');
-    if (!tokens) throw new Error('State tokens are required');
+    if (!tokens) throw new Error('Tokens are required');
 
-    const { parsed, newState } = await postWithState({
-      'ctl00$ScriptManager1': 'ctl00$MainContent$UpdatePanel1|ctl00$MainContent$ddlModel',
-      '__EVENTTARGET': 'ctl00$MainContent$ddlModel',
-      'ctl00$MainContent$ddlMake': makeId,
-      'ctl00$MainContent$ddlModel': modelId,
-      'ctl00$MainContent$ddlYear': '0',
-      'ctl00$MainContent$ddlCountry': '0',
-      'ctl00$MainContent$ddlFuel': '0',
-      'ctl00$MainContent$ddlEngine': '0'
+    const { parsed, newState } = await postFormData({
+      __EVENTTARGET: 'ctl00$MainContent$ddlModel',
+      makeId: makeId,
+      modelId: modelId
     }, tokens);
 
     if (!parsed.html) {
       throw new Error('No HTML content in response');
     }
 
-    const $ = cheerio.load(parsed.html);
-    const years = $('#MainContent_ddlYear option').map((i, el) => ({
-      value: $(el).attr('value'),
-      text: $(el).text().trim()
-    })).get().filter(opt => opt.value !== '0');
+    const years = extractOptions(parsed.html, '#MainContent_ddlYear option');
 
     res.json({
       success: true,
@@ -257,7 +229,7 @@ app.post('/api/years', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Year fetch error:', error);
+    console.error('Error fetching years:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch years',
@@ -266,7 +238,123 @@ app.post('/api/years', async (req, res) => {
   }
 });
 
-// Start Server
+// Get countries for a year
+app.post('/api/countries', async (req, res) => {
+  try {
+    const { makeId, modelId, yearId, tokens } = req.body;
+    if (!makeId || !modelId || !yearId) throw new Error('Make, Model and Year IDs are required');
+    if (!tokens) throw new Error('Tokens are required');
+
+    const { parsed, newState } = await postFormData({
+      __EVENTTARGET: 'ctl00$MainContent$ddlYear',
+      makeId: makeId,
+      modelId: modelId,
+      yearId: yearId
+    }, tokens);
+
+    if (!parsed.html) {
+      throw new Error('No HTML content in response');
+    }
+
+    const countries = extractOptions(parsed.html, '#MainContent_ddlCountry option');
+
+    res.json({
+      success: true,
+      data: {
+        countries,
+        tokens: newState
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching countries:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch countries',
+      details: error.message
+    });
+  }
+});
+
+// Get fuel types for a country
+app.post('/api/fuel-types', async (req, res) => {
+  try {
+    const { makeId, modelId, yearId, countryId, tokens } = req.body;
+    if (!makeId || !modelId || !yearId || !countryId) throw new Error('All previous selections are required');
+    if (!tokens) throw new Error('Tokens are required');
+
+    const { parsed, newState } = await postFormData({
+      __EVENTTARGET: 'ctl00$MainContent$ddlCountry',
+      makeId: makeId,
+      modelId: modelId,
+      yearId: yearId,
+      countryId: countryId
+    }, tokens);
+
+    if (!parsed.html) {
+      throw new Error('No HTML content in response');
+    }
+
+    const fuelTypes = extractOptions(parsed.html, '#MainContent_ddlFuel option');
+
+    res.json({
+      success: true,
+      data: {
+        fuelTypes,
+        tokens: newState
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching fuel types:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch fuel types',
+      details: error.message
+    });
+  }
+});
+
+// Get engine capacities for a fuel type
+app.post('/api/engines', async (req, res) => {
+  try {
+    const { makeId, modelId, yearId, countryId, fuelTypeId, tokens } = req.body;
+    if (!makeId || !modelId || !yearId || !countryId || !fuelTypeId) {
+      throw new Error('All previous selections are required');
+    }
+    if (!tokens) throw new Error('Tokens are required');
+
+    const { parsed, newState } = await postFormData({
+      __EVENTTARGET: 'ctl00$MainContent$ddlFuel',
+      makeId: makeId,
+      modelId: modelId,
+      yearId: yearId,
+      countryId: countryId,
+      fuelTypeId: fuelTypeId
+    }, tokens);
+
+    if (!parsed.html) {
+      throw new Error('No HTML content in response');
+    }
+
+    const engines = extractOptions(parsed.html, '#MainContent_ddlEngine option');
+
+    res.json({
+      success: true,
+      data: {
+        engines,
+        tokens: newState
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching engines:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch engines',
+      details: error.message
+    });
+  }
+});
+
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
